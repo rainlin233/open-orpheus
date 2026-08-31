@@ -25,17 +25,42 @@ pub(super) fn set_input_region_rects(window_id: &str, rects: Option<&[Rect]>) ->
     inject::set_input_region_rects(window_id, rects)
 }
 
+pub(super) fn arm_next_window_as_popup(
+    parent_window_id: &str,
+    width: i32,
+    height: i32,
+    anchor: Option<(i32, i32)>,
+) -> Option<u32> {
+    state::arm_next_popup(parent_window_id, width, height, anchor)
+}
+
+pub(super) fn cancel_pending_popup(token: u32) -> bool {
+    state::cancel_pending_popup(token)
+}
+
+pub(super) fn window_is_popup(window_id: &str) -> bool {
+    state::window_is_popup(window_id)
+}
+
+pub(super) fn on_next_pointer_axis(
+    window_id: &str,
+    cb: impl FnOnce(Option<u32>) + Send + 'static,
+) -> Option<u32> {
+    state::watch_next_pointer_axis(window_id, Box::new(cb))
+}
+
+pub(super) fn cancel_pointer_axis_watcher(token: u32) -> bool {
+    state::cancel_pointer_axis_watcher(token)
+}
+
 pub(super) fn on_next_new_window_first_cursor_enter(
-    cb: impl FnOnce(i32, i32) + Send + 'static,
-) -> bool {
-    let Some(m) = state::NEXT_TOPLEVEL_CURSOR_ENTER.get() else {
-        return false;
-    };
-    let Ok(mut cbs) = m.lock() else {
-        return false;
-    };
-    cbs.push(Box::new(cb));
-    true
+    cb: impl FnOnce(Option<(i32, i32)>) + Send + 'static,
+) -> Option<u32> {
+    state::watch_next_toplevel_cursor_enter(Box::new(cb))
+}
+
+pub(super) fn cancel_cursor_enter_watcher(token: u32) -> bool {
+    state::cancel_cursor_enter_watcher(token)
 }
 
 pub(crate) fn init_state() {

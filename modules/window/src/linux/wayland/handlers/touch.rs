@@ -9,14 +9,18 @@ pub(crate) fn on_touch_event(conn: &mut WaylandConn, msg: &WlMessage, fx: &mut E
     if msg.opcode == EVT_TOUCH_DOWN {
         // wl_touch.down(serial, time, surface, id, x, y): with message
         // offsets relative to the full 8-byte header, serial@8,
-        // surface@16. Mirrors the pointer `enter`/`button` capture: the
-        // seat owning the touch object is resolved via `touch_seat`.
+        // surface@16, x@24, y@28 (fixed-point). Mirrors the pointer
+        // `enter`/`button` capture: the seat owning the touch object is
+        // resolved via `touch_seat`. Coordinates use the same 5-tuple shape
+        // as pointer buttons so downstream consumers stay uniform.
         let serial = msg.u32_arg(8);
         let surf_id = msg.u32_arg(16);
-        if let (Some(serial), Some(surf_id)) = (serial, surf_id) {
+        let x = msg.fixed_arg(24);
+        let y = msg.fixed_arg(28);
+        if let (Some(serial), Some(surf_id), Some(x), Some(y)) = (serial, surf_id, x, y) {
             let seat_id = conn.touch_seat.get(&msg.object_id).copied();
             if let Some(seat_id) = seat_id {
-                fx.button = Some((seat_id, serial, surf_id));
+                fx.button = Some((seat_id, serial, surf_id, x, y));
             }
         }
     }
