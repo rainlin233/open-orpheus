@@ -168,10 +168,9 @@
 
   /**
    * Wayland overlay only: ask main to crop the native window to the HTML
-   * content rect (menu + inline submenu union). Main returns the actually
-   * applied origin shift; rebase coordinates so the next report stays
-   * relative to the current window origin. A { dx: 0, dy: 0 } reply means
-   * nothing changed and no rebase happens, so this converges.
+   * content rect (menu + inline submenu union). Main returns the clamp
+   * displacement it applied; subtracting it keeps content visually stable.
+   * A { dx: 0, dy: 0 } reply means nothing moved, so this converges.
    *
    * Reports are serialized: at most one placeOverlay call is in flight.
    * Extra triggers while busy only set a dirty flag, and the next report

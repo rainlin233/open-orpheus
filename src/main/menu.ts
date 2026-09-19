@@ -968,10 +968,12 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
           return { dx: 0, dy: 0 };
         }
         wnd.setBounds({ x: cx, y: cy, width: cw, height: ch });
-        // Report what the compositor actually applied, not what was
-        // requested, so the renderer never rebases by a missed movement.
+        // Report only the clamp-induced shift (applied origin minus the
+        // requested origin), not the total window movement: the renderer
+        // subtracts it to keep content visually stable. Zero when unclamped,
+        // so over-cropping can never push content off-screen.
         const applied = wnd.getBounds();
-        return { dx: applied.x - bounds.x, dy: applied.y - bounds.y };
+        return { dx: applied.x - nx, dy: applied.y - ny };
       },
     });
     registerInputRegionHandlers(wnd);
