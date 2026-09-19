@@ -6,7 +6,7 @@ use std::os::fd::RawFd;
 use super::super::codec::{Iface, WlMessage};
 use super::super::state::{
     CUSTOM_ID_MAP, WaylandConn, cancel_pending_popup_for_connection,
-    cancel_pending_popup_for_parent, take_pending_popup,
+    cancel_pending_popup_for_parent, note_popup_surface, take_pending_popup,
 };
 use super::{Action, Effects};
 
@@ -64,10 +64,11 @@ pub(crate) fn on_get_touch(conn: &mut WaylandConn, msg: &WlMessage) -> Action {
     Action::Forward
 }
 
-pub(crate) fn on_get_xdg_surface(conn: &mut WaylandConn, msg: &WlMessage) -> Action {
+pub(crate) fn on_get_xdg_surface(fd: RawFd, conn: &mut WaylandConn, msg: &WlMessage) -> Action {
     if let (Some(xdg_id), Some(wl_id)) = (msg.u32_arg(8), msg.u32_arg(12)) {
         conn.ifaces.insert(xdg_id, Iface::XdgSurface);
         conn.xdg_to_wl.insert(xdg_id, wl_id);
+        note_popup_surface(fd, xdg_id);
     }
     Action::Forward
 }
@@ -89,7 +90,7 @@ pub(crate) fn on_get_toplevel(
 ) -> Action {
     if let Some(top_id) = msg.u32_arg(8) {
         if let Some(wm_base_id) = conn.xdg_wm_base_id
-            && let Some(popup) = take_pending_popup(fd)
+            && let Some(popup) = take_pending_popup(fd, msg.object_id)
         {
             let positioner_id = popup.positioner_id;
             let mut replacement = Vec::with_capacity(128);

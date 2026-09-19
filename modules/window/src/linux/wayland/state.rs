@@ -286,6 +286,34 @@ mod tests {
             Some(99)
         );
     }
+
+    #[test]
+    fn pending_popup_consumed_only_by_noted_surface() {
+        init_state();
+        let fd = 93_001;
+        PENDING_POPUPS.get().unwrap().lock().unwrap().insert(
+            fd,
+            PendingPopup {
+                token: 7,
+                parent_xdg_surface_id: 20,
+                width: 10,
+                height: 10,
+                anchor_x: 0,
+                anchor_y: 0,
+                positioner_id: 30,
+                xdg_surface_id: None,
+            },
+        );
+        // An unrelated window's toplevel must not steal the reservation.
+        assert!(take_pending_popup(fd, 41).is_none());
+        // The first noted surface wins; consuming clears the reservation.
+        note_popup_surface(fd, 42);
+        note_popup_surface(fd, 43);
+        let popup = take_pending_popup(fd, 42).expect("recorded surface consumes");
+        assert_eq!(popup.token, 7);
+        assert!(take_pending_popup(fd, 42).is_none());
+        PENDING_POPUPS.get().unwrap().lock().unwrap().remove(&fd);
+    }
 }
 
 // ── Global state ───────────────────────────────────────────────────────────
@@ -317,6 +345,10 @@ pub(crate) struct PendingPopup {
     pub(crate) anchor_x: i32,
     pub(crate) anchor_y: i32,
     pub(crate) positioner_id: u32,
+    /// The xdg_surface the popup will be created for, recorded when it
+    /// appears. A reservation is only consumed by a get_toplevel for this
+    /// exact surface, so a racing unrelated window can never steal it.
+    pub(crate) xdg_surface_id: Option<u32>,
 }
 
 pub(crate) static LAST_BUTTON: OnceLock<Mutex<LastButtonState>> = OnceLock::new();
@@ -392,7 +424,11 @@ pub(crate) fn arm_first_cursor_enter_watchers(fd: RawFd, wl_surface_id: u32) {
         return;
     }
     let mut callbacks: Vec<_> = pending.drain(..).collect();
-    drop(pending);
+    // NOTE: the pending lock is intentionally held across the insert below.
+    // Every other path takes these two locks in the same order (pending,
+    // then watchers) or one at a time, so this cannot deadlock — and it
+    // closes the gap where a concurrent cancellation could miss a watcher
+    // between drain and insert.
     if let Some(watchers) = CURSOR_ENTER_WATCHERS.get()
         && let Ok(mut watchers) = watchers.lock()
     {
@@ -402,6 +438,7 @@ pub(crate) fn arm_first_cursor_enter_watchers(fd: RawFd, wl_surface_id: u32) {
             .append(&mut callbacks);
         return;
     }
+    drop(pending);
     for watcher in callbacks {
         (watcher.callback)(None);
     }
@@ -609,6 +646,7 @@ pub(crate) fn arm_next_popup(
             anchor_x,
             anchor_y,
             positioner_id,
+            xdg_surface_id: None,
         },
     );
     Some(token)
@@ -661,9 +699,36 @@ pub(crate) fn cancel_pending_popup(token: u32) -> bool {
     true
 }
 
-pub(crate) fn take_pending_popup(fd: RawFd) -> Option<PendingPopup> {
+pub(crate) fn take_pending_popup(fd: RawFd, xdg_surface_id: u32) -> Option<PendingPopup> {
     let mut pending = PENDING_POPUPS.get()?.lock().ok()?;
-    pending.remove(&fd)
+    // Only the xdg_surface recorded for this reservation may consume it.
+    // Anything else (e.g. an unrelated window created in between) is left
+    // for the normal toplevel path; the reservation stays until expiry.
+    if pending
+        .get(&fd)
+        .is_some_and(|popup| popup.xdg_surface_id == Some(xdg_surface_id))
+    {
+        pending.remove(&fd)
+    } else {
+        None
+    }
+}
+
+/// Remember which xdg_surface a pending popup reservation belongs to.
+/// Called when an xdg_surface appears while armed; first one wins, since
+/// Chromium creates the popup surface immediately after arming.
+pub(crate) fn note_popup_surface(fd: RawFd, xdg_surface_id: u32) {
+    let Some(pending) = PENDING_POPUPS.get() else {
+        return;
+    };
+    let Ok(mut pending) = pending.lock() else {
+        return;
+    };
+    if let Some(popup) = pending.get_mut(&fd)
+        && popup.xdg_surface_id.is_none()
+    {
+        popup.xdg_surface_id = Some(xdg_surface_id);
+    }
 }
 
 pub(crate) fn cancel_pending_popup_for_parent(
@@ -992,6 +1057,7 @@ mod tests_extra {
                 anchor_x: 0,
                 anchor_y: 0,
                 positioner_id: 30,
+                xdg_surface_id: None,
             },
         );
         CUSTOM_ID_MAP
@@ -1098,6 +1164,7 @@ mod tests_extra {
                 anchor_x: 0,
                 anchor_y: 0,
                 positioner_id: 40,
+                xdg_surface_id: None,
             },
         );
 

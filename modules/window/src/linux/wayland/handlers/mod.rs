@@ -58,7 +58,7 @@ pub(crate) fn dispatch_request(
         (Iface::WlSeat, REQ_GET_POINTER) => objects::on_get_pointer(conn, msg),
         (Iface::WlSeat, REQ_GET_TOUCH) => objects::on_get_touch(conn, msg),
         (Iface::WlSeat, WL_SEAT_RELEASE) => objects::on_destroy(fd, conn, msg, fx),
-        (Iface::XdgWmBase, REQ_GET_XDG_SURFACE) => objects::on_get_xdg_surface(conn, msg),
+        (Iface::XdgWmBase, REQ_GET_XDG_SURFACE) => objects::on_get_xdg_surface(fd, conn, msg),
         (Iface::XdgWmBase, REQ_DESTROY) => objects::on_destroy(fd, conn, msg, fx),
         (Iface::XdgSurface, REQ_GET_TOPLEVEL) => objects::on_get_toplevel(fd, conn, msg, fx),
         (Iface::XdgToplevel, REQ_SET_TITLE) => title::on_set_title(fd, conn, msg),

@@ -75,6 +75,7 @@
   }
 
   onMount(() => {
+    let rootRo: ResizeObserver | null = null;
     if (waylandMode) {
       // Keep the native window cropped to content on every layout change
       // (submenu open/close, content updates, window resizes). The document
@@ -82,8 +83,8 @@
       // not resize it, so menu/submenu elements are observed directly and
       // state transitions below report explicitly.
       tick().then(() => {
-        const ro = new ResizeObserver(() => reportOverlay());
-        ro.observe(document.documentElement);
+        rootRo = new ResizeObserver(() => reportOverlay());
+        rootRo.observe(document.documentElement);
       });
 
       api.pull().then((data) => {
@@ -156,6 +157,7 @@
         items = rawItems as MenuItem[];
       });
     }
+    return () => rootRo?.disconnect();
   });
 
   function handleItemClick(item: MenuItem) {
