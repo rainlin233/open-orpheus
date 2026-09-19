@@ -290,8 +290,9 @@ mod tests {
     #[test]
     fn recognizes_niri_desktop_names() {
         assert!(desktop_name_is_niri("niri"));
-        assert!(desktop_name_is_niri("Hyprland:niri"));
+        assert!(desktop_name_is_niri("NIRI"));
         assert!(!desktop_name_is_niri("GNOME"));
         assert!(!desktop_name_is_niri("KDE"));
+        assert!(!desktop_name_is_niri("Hyprland"));
     }
 }
