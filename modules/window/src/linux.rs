@@ -28,11 +28,17 @@ fn disable_display_server_hooks() -> bool {
 fn desktop_name_is_gnome(value: &str) -> bool {
     value.split(':').any(|desktop| {
         let desktop = desktop.trim().to_ascii_lowercase();
-        desktop == "gnome" || desktop.starts_with("gnome-") || desktop == "niri"
+        desktop == "gnome" || desktop.starts_with("gnome-")
     })
 }
 
-pub(crate) fn is_gnome_desktop() -> bool {
+fn desktop_name_is_niri(value: &str) -> bool {
+    value
+        .split(':')
+        .any(|desktop| desktop.trim().to_ascii_lowercase() == "niri")
+}
+
+fn session_desktop_value() -> Option<String> {
     [
         "XDG_CURRENT_DESKTOP",
         "XDG_SESSION_DESKTOP",
@@ -40,11 +46,20 @@ pub(crate) fn is_gnome_desktop() -> bool {
     ]
     .into_iter()
     .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
-    .is_some_and(|value| desktop_name_is_gnome(&value))
+}
+
+fn is_gnome_desktop() -> bool {
+    session_desktop_value().is_some_and(|value| desktop_name_is_gnome(&value))
+}
+
+fn is_niri_desktop() -> bool {
+    session_desktop_value().is_some_and(|value| desktop_name_is_niri(&value))
 }
 
 pub fn supports_gnome_wayland_popup() -> bool {
-    !disable_display_server_hooks() && wayland::is_wayland() && is_gnome_desktop()
+    !disable_display_server_hooks()
+        && wayland::is_wayland()
+        && (is_gnome_desktop() || is_niri_desktop())
 }
 
 #[derive(Clone, Copy)]
@@ -260,15 +275,23 @@ static DESTRUCTOR: extern "C" fn() = on_unload;
 
 #[cfg(test)]
 mod tests {
-    use super::desktop_name_is_gnome;
+    use super::{desktop_name_is_gnome, desktop_name_is_niri};
 
     #[test]
-    fn recognizes_gnome_and_niri_desktop_names() {
+    fn recognizes_only_gnome_desktop_names() {
         assert!(desktop_name_is_gnome("GNOME"));
         assert!(desktop_name_is_gnome("ubuntu:GNOME"));
         assert!(desktop_name_is_gnome("GNOME-Classic"));
-        assert!(desktop_name_is_gnome("niri"));
         assert!(!desktop_name_is_gnome("KDE"));
         assert!(!desktop_name_is_gnome("plasma"));
+        assert!(!desktop_name_is_gnome("niri"));
+    }
+
+    #[test]
+    fn recognizes_niri_desktop_names() {
+        assert!(desktop_name_is_niri("niri"));
+        assert!(desktop_name_is_niri("Hyprland:niri"));
+        assert!(!desktop_name_is_niri("GNOME"));
+        assert!(!desktop_name_is_niri("KDE"));
     }
 }
