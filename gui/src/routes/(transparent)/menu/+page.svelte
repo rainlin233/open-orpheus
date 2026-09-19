@@ -168,9 +168,14 @@
 
   /**
    * Wayland overlay only: ask main to crop the native window to the HTML
-   * content rect (menu + inline submenu union). Main returns the clamp
-   * displacement it applied; subtracting it keeps content visually stable.
-   * A { dx: 0, dy: 0 } reply means nothing moved, so this converges.
+   * content rect (menu + inline submenu union). Main returns the actually
+   * applied origin shift; rebase coordinates so the next report stays
+   * relative to the current window origin. A { dx: 0, dy: 0 } reply means
+   * nothing changed and no rebase happens, so this converges.
+   *
+   * The reported rect is always kept inside the viewport (see the clamps
+   * below): that is what keeps submenus reachable after cropping. Cropping
+   * a rect that sticks out would preserve its off-screen position instead.
    *
    * Reports are serialized: at most one placeOverlay call is in flight.
    * Extra triggers while busy only set a dirty flag, and the next report
@@ -271,6 +276,10 @@
           if (submenuX + subRect.width > vw)
             submenuX = rect.left - subRect.width;
           if (submenuY + subRect.height > vh) submenuY = vh - subRect.height;
+          // Keep the submenu inside the viewport: the crop below preserves
+          // whatever rect we report, including off-screen parts.
+          if (submenuX < 0) submenuX = 0;
+          if (submenuY < 0) submenuY = 0;
           reportOverlay();
         });
       } else if (!isSubmenuMode && submenuParentIndex !== index) {
