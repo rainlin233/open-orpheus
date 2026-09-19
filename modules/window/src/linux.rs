@@ -25,6 +25,43 @@ fn disable_display_server_hooks() -> bool {
     })
 }
 
+fn desktop_name_is_gnome(value: &str) -> bool {
+    value.split(':').any(|desktop| {
+        let desktop = desktop.trim().to_ascii_lowercase();
+        desktop == "gnome" || desktop.starts_with("gnome-")
+    })
+}
+
+fn desktop_name_is_niri(value: &str) -> bool {
+    value
+        .split(':')
+        .any(|desktop| desktop.trim().to_ascii_lowercase() == "niri")
+}
+
+fn session_desktop_value() -> Option<String> {
+    [
+        "XDG_CURRENT_DESKTOP",
+        "XDG_SESSION_DESKTOP",
+        "DESKTOP_SESSION",
+    ]
+    .into_iter()
+    .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
+}
+
+fn is_gnome_desktop() -> bool {
+    session_desktop_value().is_some_and(|value| desktop_name_is_gnome(&value))
+}
+
+fn is_niri_desktop() -> bool {
+    session_desktop_value().is_some_and(|value| desktop_name_is_niri(&value))
+}
+
+pub fn supports_gnome_wayland_popup() -> bool {
+    !disable_display_server_hooks()
+        && wayland::is_wayland()
+        && (is_gnome_desktop() || is_niri_desktop())
+}
+
 #[derive(Clone, Copy)]
 pub struct Rect {
     pub x: i32,
@@ -117,13 +154,13 @@ pub fn get_cursor_position() -> Option<(i32, i32)> {
 }
 
 pub fn capture_next_window_first_cursor_enter(
-    env: Env,
+    _env: Env,
     callback: Function<FnArgs<(i32, i32)>, ()>,
-) -> Result<()> {
-    if disable_display_server_hooks() {
-        return env.throw(
-            "captureNextWindowFirstCursorEnter is unavailable when Wayland hooks are disabled",
-        );
+) -> Result<u32> {
+    if disable_display_server_hooks() || !wayland::is_wayland() {
+        return Err(Error::from_reason(
+            "captureNextWindowFirstCursorEnter requires active Wayland hooks",
+        ));
     }
 
     // Give only one undroppable reference to the callback closure below, to avoid double drop
@@ -136,24 +173,86 @@ pub fn capture_next_window_first_cursor_enter(
         )?,
     ));
 
-    if !wayland::on_next_new_window_first_cursor_enter(move |x, y| {
-        if x < 0 || y < 0 {
-            return;
-        }
+    let token = wayland::on_next_new_window_first_cursor_enter(move |position| {
         let Some(cb) = callback.take() else {
             return;
         };
-        cb.call(
-            (x as u32, y as u32),
-            ThreadsafeFunctionCallMode::NonBlocking,
-        );
+        if let Some((x, y)) = position
+            && x >= 0
+            && y >= 0
+        {
+            cb.call(
+                (x as u32, y as u32),
+                ThreadsafeFunctionCallMode::NonBlocking,
+            );
+        }
         // Now we can safely drop it only once
         ManuallyDrop::into_inner(cb);
-    }) {
-        return env.throw("captureNextWindowFirstCursorEnter is unavailable because Wayland hooks are not initialized");
-    }
+    });
+    token.ok_or_else(|| {
+        Error::from_reason(
+            "captureNextWindowFirstCursorEnter is unavailable because Wayland hooks are not initialized",
+        )
+    })
+}
 
-    Ok(())
+pub fn cancel_next_window_first_cursor_enter(token: u32) -> bool {
+    wayland::cancel_cursor_enter_watcher(token)
+}
+
+pub fn arm_next_window_as_popup(
+    parent_window_id: String,
+    width: i32,
+    height: i32,
+    anchor_x: Option<i32>,
+    anchor_y: Option<i32>,
+) -> Option<u32> {
+    if !supports_gnome_wayland_popup() {
+        return None;
+    }
+    let anchor = anchor_x.zip(anchor_y);
+    wayland::arm_next_window_as_popup(&parent_window_id, width, height, anchor)
+}
+
+pub fn cancel_pending_popup(token: u32) -> bool {
+    wayland::cancel_pending_popup(token)
+}
+
+pub fn is_window_wayland_popup(window_id: String) -> bool {
+    wayland::window_is_popup(&window_id)
+}
+
+pub fn capture_window_next_pointer_axis(
+    _env: Env,
+    window_id: String,
+    callback: Function<FnArgs<(u32,)>, ()>,
+) -> Result<u32> {
+    if disable_display_server_hooks() || !wayland::is_wayland() {
+        return Err(Error::from_reason(
+            "captureWindowNextPointerAxis requires active Wayland hooks",
+        ));
+    }
+    let mut callback = Some(ManuallyDrop::new(
+        callback.build_threadsafe_function().build_callback(
+            |ctx: ThreadsafeCallContext<u32>| {
+                Ok(std::convert::Into::<FnArgs<(u32,)>>::into((ctx.value,)))
+            },
+        )?,
+    ));
+    let token = wayland::on_next_pointer_axis(&window_id, move |axis| {
+        let Some(cb) = callback.take() else {
+            return;
+        };
+        if let Some(axis) = axis {
+            cb.call(axis, ThreadsafeFunctionCallMode::NonBlocking);
+        }
+        ManuallyDrop::into_inner(cb);
+    });
+    token.ok_or_else(|| Error::from_reason("Unable to watch pointer axis for this Wayland window"))
+}
+
+pub fn cancel_window_pointer_axis_capture(token: u32) -> bool {
+    wayland::cancel_pointer_axis_watcher(token)
 }
 
 #[napi_derive::module_init]
@@ -173,3 +272,27 @@ pub extern "C" fn on_unload() {
 #[used]
 #[unsafe(link_section = ".fini_array")]
 static DESTRUCTOR: extern "C" fn() = on_unload;
+
+#[cfg(test)]
+mod tests {
+    use super::{desktop_name_is_gnome, desktop_name_is_niri};
+
+    #[test]
+    fn recognizes_only_gnome_desktop_names() {
+        assert!(desktop_name_is_gnome("GNOME"));
+        assert!(desktop_name_is_gnome("ubuntu:GNOME"));
+        assert!(desktop_name_is_gnome("GNOME-Classic"));
+        assert!(!desktop_name_is_gnome("KDE"));
+        assert!(!desktop_name_is_gnome("plasma"));
+        assert!(!desktop_name_is_gnome("niri"));
+    }
+
+    #[test]
+    fn recognizes_niri_desktop_names() {
+        assert!(desktop_name_is_niri("niri"));
+        assert!(desktop_name_is_niri("NIRI"));
+        assert!(!desktop_name_is_niri("GNOME"));
+        assert!(!desktop_name_is_niri("KDE"));
+        assert!(!desktop_name_is_niri("Hyprland"));
+    }
+}
