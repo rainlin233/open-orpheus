@@ -86,7 +86,7 @@ export function createSubmenuWindow(width = 300, height = 400): BrowserWindow {
   return wnd;
 }
 
-export function createOverlayWindow(): BrowserWindow {
+export function createOverlayWindow(parent?: BrowserWindow): BrowserWindow {
   if (overlayWindow && !overlayWindow.isDestroyed()) {
     overlayWindow.destroy();
     overlayWindow = null;
@@ -103,6 +103,9 @@ export function createOverlayWindow(): BrowserWindow {
     resizable: true,
     alwaysOnTop: true,
     focusable: true,
+    // Transient parent: tiling compositors (e.g. niri) open transient
+    // windows floating without any WM rule. No-op when parent is missing.
+    ...(parent && !parent.isDestroyed() ? { parent } : {}),
     fullscreen: !workaroundEnabled(WorkaroundFlags.OverlayNoFullscreen),
     webPreferences: {
       partition: "open-orpheus",

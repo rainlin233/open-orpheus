@@ -31,6 +31,7 @@ pub(crate) fn on_bind(conn: &mut WaylandConn, msg: &WlMessage) -> Action {
                 conn.xdg_wm_base_id = Some(new_id);
                 Some(Iface::XdgWmBase)
             }
+            "zxdg_decoration_manager_v1" => Some(Iface::ZxdgDecorationManagerV1),
             _ => None,
         };
         if let Some(tag) = tag {
@@ -175,6 +176,10 @@ pub(crate) fn on_destroy(
     msg: &WlMessage,
     fx: &mut Effects,
 ) -> Action {
+    // Objects whose creation was swallowed server-side (popup decorations)
+    // must have their destroy swallowed too: the compositor never saw them.
+    let swallowed =
+        conn.ifaces.get(&msg.object_id) == Some(&Iface::ZxdgToplevelDecorationSwallowed);
     if let Some(iface) = conn.ifaces.get(&msg.object_id).copied() {
         if iface == Iface::XdgWmBase {
             cancel_pending_popup_for_connection(fd, conn);
@@ -208,7 +213,11 @@ pub(crate) fn on_destroy(
         }
     }
     conn.purge(msg.object_id);
-    Action::Forward
+    if swallowed {
+        Action::Suppress
+    } else {
+        Action::Forward
+    }
 }
 
 pub(crate) fn on_pointer_release(conn: &mut WaylandConn, msg: &WlMessage) -> Action {

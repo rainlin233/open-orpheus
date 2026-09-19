@@ -118,6 +118,12 @@ impl WaylandConn {
             Some(Iface::XdgWmBase) if self.xdg_wm_base_id == Some(id) => {
                 self.xdg_wm_base_id = None;
             }
+            Some(Iface::WlCompositor) if self.compositor_id == Some(id) => {
+                self.compositor_id = None;
+            }
+            Some(Iface::XdgWmBase) if self.xdg_wm_base_id == Some(id) => {
+                self.xdg_wm_base_id = None;
+            }
             _ => {}
         }
         self.ifaces.remove(&id);
@@ -953,7 +959,7 @@ pub(crate) fn clear_state() {
 }
 
 #[cfg(test)]
-mod more_tests {
+mod tests_extra {
     use std::sync::{
         Arc,
         atomic::{AtomicU32, Ordering},

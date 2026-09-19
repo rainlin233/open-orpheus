@@ -4,6 +4,7 @@
 //! `(&mut WaylandConn, &WlMessage)` returning an [`Action`]. The dispatch
 //! tables below are the single index of every intercept point.
 
+mod decoration;
 mod objects;
 mod pointer;
 mod title;
@@ -13,8 +14,9 @@ use std::os::fd::RawFd;
 
 use super::codec::{
     EVT_DELETE_ID, Iface, REQ_BIND, REQ_CREATE_SURFACE, REQ_DESTROY, REQ_GET_POINTER,
-    REQ_GET_REGISTRY, REQ_GET_TOPLEVEL, REQ_GET_TOUCH, REQ_GET_XDG_SURFACE, REQ_SET_TITLE,
-    WL_POINTER_RELEASE, WL_SEAT_RELEASE, WL_TOUCH_RELEASE, WlMessage,
+    REQ_GET_REGISTRY, REQ_GET_TOPLEVEL, REQ_GET_TOPLEVEL_DECORATION, REQ_GET_TOUCH,
+    REQ_GET_XDG_SURFACE, REQ_SET_TITLE, WL_POINTER_RELEASE, WL_SEAT_RELEASE, WL_TOUCH_RELEASE,
+    WlMessage,
 };
 use super::state::WaylandConn;
 
@@ -66,8 +68,20 @@ pub(crate) fn dispatch_request(
         }
         (Iface::XdgPopupShim, REQ_DESTROY) => objects::on_destroy(fd, conn, msg, fx),
         (Iface::XdgPopupShim, _) => Action::Suppress,
-        (Iface::WlSurface | Iface::XdgSurface | Iface::XdgToplevel, REQ_DESTROY) => {
+        (
+            Iface::WlSurface
+            | Iface::XdgSurface
+            | Iface::XdgToplevel
+            | Iface::ZxdgToplevelDecoration,
+            REQ_DESTROY,
+        ) => objects::on_destroy(fd, conn, msg, fx),
+        // Swallowed decoration objects were never created server-side.
+        (Iface::ZxdgToplevelDecorationSwallowed, REQ_DESTROY) => {
             objects::on_destroy(fd, conn, msg, fx)
+        }
+        (Iface::ZxdgToplevelDecorationSwallowed, _) => Action::Suppress,
+        (Iface::ZxdgDecorationManagerV1, REQ_GET_TOPLEVEL_DECORATION) => {
+            decoration::on_get_toplevel_decoration(fd, conn, msg)
         }
         (Iface::WlPointer, WL_POINTER_RELEASE) => objects::on_pointer_release(conn, msg),
         (Iface::WlTouch, WL_TOUCH_RELEASE) => objects::on_touch_release(conn, msg),

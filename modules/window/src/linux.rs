@@ -28,7 +28,7 @@ fn disable_display_server_hooks() -> bool {
 fn desktop_name_is_gnome(value: &str) -> bool {
     value.split(':').any(|desktop| {
         let desktop = desktop.trim().to_ascii_lowercase();
-        desktop == "gnome" || desktop.starts_with("gnome-")
+        desktop == "gnome" || desktop.starts_with("gnome-") || desktop == "niri"
     })
 }
 
@@ -263,12 +263,12 @@ mod tests {
     use super::desktop_name_is_gnome;
 
     #[test]
-    fn recognizes_only_gnome_desktop_names() {
+    fn recognizes_gnome_and_niri_desktop_names() {
         assert!(desktop_name_is_gnome("GNOME"));
         assert!(desktop_name_is_gnome("ubuntu:GNOME"));
         assert!(desktop_name_is_gnome("GNOME-Classic"));
+        assert!(desktop_name_is_gnome("niri"));
         assert!(!desktop_name_is_gnome("KDE"));
         assert!(!desktop_name_is_gnome("plasma"));
-        assert!(!desktop_name_is_gnome("niri"));
     }
 }

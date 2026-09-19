@@ -226,10 +226,7 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             init_state();
-            *LAST_BUTTON
-                .get_or_init(Default::default)
-                .lock()
-                .unwrap() = LastButtonState::default();
+            *LAST_BUTTON.get_or_init(Default::default).lock().unwrap() = LastButtonState::default();
 
             let (app, peer) = UnixStream::pair().expect("socketpair");
             let fd = app.as_raw_fd();

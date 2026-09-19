@@ -281,12 +281,16 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
 
     try {
       const desktopEnvironment = getDesktopEnvironment();
-      const supportsPopup = supportsGnomeWaylandPopup();
+      const supportsPopup = supportsGnomeWaylandPopup() ||
+        (process.env.XDG_CURRENT_DESKTOP ?? "")
+          .toLowerCase()
+          .split(":")
+          .includes("niri");
       if (desktopEnvironment === DesktopEnvironment.Wayland) {
         if (parentWindow && supportsPopup) {
           this.showWaylandPopup(parentWindow);
         } else {
-          this.showOverlay();
+          this.showOverlay(parentWindow);
         }
       } else {
         this.showWindow();
@@ -376,7 +380,7 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
       destroyMenuWindow();
       if (this.closed) return;
       try {
-        this.showOverlay();
+        this.showOverlay(parentWindow);
       } catch {
         this.close();
       }
@@ -584,6 +588,8 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
         closeSubmenu: async () => {
           if (!measuring) this.closeSubmenuWindow();
         },
+        // Overlay-only API; sized via reportSize here.
+        placeOverlay: async () => ({ dx: 0, dy: 0 }),
       });
       registerInputRegionHandlers(wnd);
     };
@@ -803,6 +809,8 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
         },
         openSubmenu: async () => {},
         closeSubmenu: async () => {},
+        // Overlay-only API; submenu measure windows use reportSize.
+        placeOverlay: async () => ({ dx: 0, dy: 0 }),
       });
     };
 
@@ -821,7 +829,7 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
   // --- Wayland: fullscreen transparent overlay ---
   // Created fresh each time so the compositor sends pointer-enter,
   // which the renderer uses to capture the real cursor position.
-  private showOverlay() {
+  private showOverlay(parentWindow?: BrowserWindow) {
     let cancelCursorCapture = () => {};
     let finishCursorCapture = () => {};
     let startCursorCapture = () => {};
@@ -864,7 +872,7 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
       finishCursorCapture();
     });
 
-    const wnd = createOverlayWindow();
+    const wnd = createOverlayWindow(parentWindow);
     let rendererReady = false;
     const rendererDeadline = setTimeout(() => {
       if (!rendererReady && !this.closed) this.close();
@@ -925,6 +933,45 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
       reportSize: async () => {},
       openSubmenu: async () => {},
       closeSubmenu: async () => {},
+      // Crop the overlay window to the renderer-reported content rect.
+      // Coordinates are relative to the current window origin, so content
+      // stays pixel-identical on screen. Dismissal still works via blur
+      // (clicks outside land on other windows and move focus away).
+      placeOverlay: async (_event, x, y, width, height) => {
+        if (this.closed || wnd.isDestroyed() || !wnd.isVisible()) {
+          return { dx: 0, dy: 0 };
+        }
+        // Fullscreen/maximized overlays cover the screen by design and
+        // compositors ignore setBounds there; skip to keep current behavior.
+        if (wnd.isFullScreen() || wnd.isMaximized()) {
+          return { dx: 0, dy: 0 };
+        }
+        width = Math.max(1, Math.round(width));
+        height = Math.max(1, Math.round(height));
+        const bounds = wnd.getBounds();
+        const nx = Math.round(bounds.x + x);
+        const ny = Math.round(bounds.y + y);
+        // Clamp to the work area of the display containing the target.
+        const display = screen.getDisplayNearestPoint({ x: nx, y: ny });
+        const { x: dx, y: dy, width: dw, height: dh } = display.workArea;
+        const cw = Math.min(width, dw);
+        const ch = Math.min(height, dh);
+        const cx = Math.min(Math.max(nx, dx), Math.max(dx, dx + dw - cw));
+        const cy = Math.min(Math.max(ny, dy), Math.max(dy, dy + dh - ch));
+        if (
+          bounds.x === cx &&
+          bounds.y === cy &&
+          bounds.width === cw &&
+          bounds.height === ch
+        ) {
+          return { dx: 0, dy: 0 };
+        }
+        wnd.setBounds({ x: cx, y: cy, width: cw, height: ch });
+        // Report what the compositor actually applied, not what was
+        // requested, so the renderer never rebases by a missed movement.
+        const applied = wnd.getBounds();
+        return { dx: applied.x - bounds.x, dy: applied.y - bounds.y };
+      },
     });
     registerInputRegionHandlers(wnd);
   }
@@ -1025,6 +1072,8 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
           close: async () => {},
           openSubmenu: async () => {},
           closeSubmenu: async () => {},
+          // Overlay-only API; sized via reportSize here.
+          placeOverlay: async () => ({ dx: 0, dy: 0 }),
         });
 
         sub.on("blur", () => {
@@ -1099,6 +1148,8 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
       closeSubmenu: async () => {
         this.closeSubmenuWindow();
       },
+      // Overlay-only API; this window is sized via reportSize.
+      placeOverlay: async () => ({ dx: 0, dy: 0 }),
     });
 
     const blurCheck = () => {
