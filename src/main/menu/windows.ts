@@ -5,6 +5,14 @@ import { BrowserWindow } from "electron";
 import { workaroundEnabled, WorkaroundFlags } from "./workaround";
 import { registerWaylandWindowId } from "../registerWaylandWindowId";
 
+/** True when running under niri (used for niri-only menu behavior). */
+function isNiriSession(): boolean {
+  return (process.env.XDG_CURRENT_DESKTOP ?? "")
+    .toLowerCase()
+    .split(":")
+    .includes("niri");
+}
+
 let menuWindow: BrowserWindow | null = null;
 let overlayWindow: BrowserWindow | null = null;
 
@@ -103,9 +111,10 @@ export function createOverlayWindow(parent?: BrowserWindow): BrowserWindow {
     resizable: true,
     alwaysOnTop: true,
     focusable: true,
-    // Transient parent: tiling compositors (e.g. niri) open transient
-    // windows floating without any WM rule. No-op when parent is missing.
-    ...(parent && !parent.isDestroyed() ? { parent } : {}),
+    // Transient parent (niri only): tiling compositors open transient
+    // windows floating without any WM rule. GNOME/KDE keep today's
+    // behavior. No-op when parent is missing.
+    ...(parent && !parent.isDestroyed() && isNiriSession() ? { parent } : {}),
     fullscreen: !workaroundEnabled(WorkaroundFlags.OverlayNoFullscreen),
     webPreferences: {
       partition: "open-orpheus",

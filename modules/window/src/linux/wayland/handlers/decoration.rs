@@ -12,6 +12,7 @@
 
 use std::os::fd::RawFd;
 
+use super::super::super::is_gnome_desktop;
 use super::super::codec::{Iface, WlMessage};
 use super::super::state::WaylandConn;
 use super::Action;
@@ -28,7 +29,9 @@ pub(crate) fn on_get_toplevel_decoration(
         .insert(decoration_id, Iface::ZxdgToplevelDecoration);
 
     let is_popup = conn.ifaces.get(&top_id) == Some(&Iface::XdgPopupShim);
-    if is_popup {
+    // GNOME keeps today's behavior byte-for-byte; only strict compositors
+    // need the suppression.
+    if is_popup && !is_gnome_desktop() {
         // Retag so later messages to this never-created object (set_mode,
         // unset_mode, destroy) are swallowed as well.
         conn.ifaces

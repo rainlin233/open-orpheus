@@ -32,7 +32,7 @@ fn desktop_name_is_gnome(value: &str) -> bool {
     })
 }
 
-fn is_gnome_desktop() -> bool {
+pub(crate) fn is_gnome_desktop() -> bool {
     [
         "XDG_CURRENT_DESKTOP",
         "XDG_SESSION_DESKTOP",
