@@ -281,12 +281,8 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
 
     try {
       const desktopEnvironment = getDesktopEnvironment();
-      const supportsPopup =
-        supportsGnomeWaylandPopup() ||
-        (process.env.XDG_CURRENT_DESKTOP ?? "")
-          .toLowerCase()
-          .split(":")
-          .includes("niri");
+      // Native side covers GNOME and niri; see supports_gnome_wayland_popup.
+      const supportsPopup = supportsGnomeWaylandPopup();
       if (desktopEnvironment === DesktopEnvironment.Wayland) {
         if (parentWindow && supportsPopup) {
           this.showWaylandPopup(parentWindow);

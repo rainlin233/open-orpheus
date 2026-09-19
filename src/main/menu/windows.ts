@@ -7,7 +7,12 @@ import { registerWaylandWindowId } from "../registerWaylandWindowId";
 
 /** True when running under niri (used for niri-only menu behavior). */
 function isNiriSession(): boolean {
-  return (process.env.XDG_CURRENT_DESKTOP ?? "")
+  return (
+    process.env.XDG_CURRENT_DESKTOP ??
+    process.env.XDG_SESSION_DESKTOP ??
+    process.env.DESKTOP_SESSION ??
+    ""
+  )
     .toLowerCase()
     .split(":")
     .includes("niri");

@@ -25,14 +25,18 @@ fn disable_display_server_hooks() -> bool {
     })
 }
 
-fn desktop_name_is_gnome(value: &str) -> bool {
+/// Whether the session compositor is one where native xdg_popup menus are
+/// known to work: GNOME (`gnome`, `gnome-*` variants like `GNOME-Classic`)
+/// and niri. The value is colon-separated per
+/// the XDG desktop-entry spec (e.g. "ubuntu:GNOME").
+fn desktop_name_supports_native_popup(value: &str) -> bool {
     value.split(':').any(|desktop| {
         let desktop = desktop.trim().to_ascii_lowercase();
         desktop == "gnome" || desktop.starts_with("gnome-") || desktop == "niri"
     })
 }
 
-pub(crate) fn is_gnome_desktop() -> bool {
+fn session_desktop_value() -> Option<String> {
     [
         "XDG_CURRENT_DESKTOP",
         "XDG_SESSION_DESKTOP",
@@ -40,11 +44,14 @@ pub(crate) fn is_gnome_desktop() -> bool {
     ]
     .into_iter()
     .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
-    .is_some_and(|value| desktop_name_is_gnome(&value))
+}
+
+fn is_popup_supported_desktop() -> bool {
+    session_desktop_value().is_some_and(|value| desktop_name_supports_native_popup(&value))
 }
 
 pub fn supports_gnome_wayland_popup() -> bool {
-    !disable_display_server_hooks() && wayland::is_wayland() && is_gnome_desktop()
+    !disable_display_server_hooks() && wayland::is_wayland() && is_popup_supported_desktop()
 }
 
 #[derive(Clone, Copy)]
@@ -260,15 +267,17 @@ static DESTRUCTOR: extern "C" fn() = on_unload;
 
 #[cfg(test)]
 mod tests {
-    use super::desktop_name_is_gnome;
+    use super::desktop_name_supports_native_popup;
 
     #[test]
-    fn recognizes_gnome_and_niri_desktop_names() {
-        assert!(desktop_name_is_gnome("GNOME"));
-        assert!(desktop_name_is_gnome("ubuntu:GNOME"));
-        assert!(desktop_name_is_gnome("GNOME-Classic"));
-        assert!(desktop_name_is_gnome("niri"));
-        assert!(!desktop_name_is_gnome("KDE"));
-        assert!(!desktop_name_is_gnome("plasma"));
+    fn recognizes_popup_supported_desktop_names() {
+        assert!(desktop_name_supports_native_popup("GNOME"));
+        assert!(desktop_name_supports_native_popup("ubuntu:GNOME"));
+        assert!(desktop_name_supports_native_popup("GNOME-Classic"));
+        assert!(desktop_name_supports_native_popup("niri"));
+        assert!(desktop_name_supports_native_popup("NIRI"));
+        assert!(!desktop_name_supports_native_popup("KDE"));
+        assert!(!desktop_name_supports_native_popup("plasma"));
+        assert!(!desktop_name_supports_native_popup("Hyprland"));
     }
 }
