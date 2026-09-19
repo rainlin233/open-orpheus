@@ -281,7 +281,8 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
 
     try {
       const desktopEnvironment = getDesktopEnvironment();
-      const supportsPopup = supportsGnomeWaylandPopup() ||
+      const supportsPopup =
+        supportsGnomeWaylandPopup() ||
         (process.env.XDG_CURRENT_DESKTOP ?? "")
           .toLowerCase()
           .split(":")
