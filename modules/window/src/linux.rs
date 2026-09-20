@@ -1,4 +1,7 @@
-use std::{mem::ManuallyDrop, sync::OnceLock};
+use std::{
+    mem::ManuallyDrop,
+    sync::{Mutex, OnceLock},
+};
 
 use napi::{
     Env, Error, Result, Unknown, ValueType,
@@ -12,6 +15,33 @@ mod wayland;
 mod x11;
 
 static DISABLE_DISPLAY_SERVER_HOOKS: OnceLock<bool> = OnceLock::new();
+
+/// Deferred threadsafe-function releases. Releasing a TSFN directly on a
+/// Wayland watcher thread races Node's threadsafe-function teardown and can
+/// abort the process with a silent SIGABRT. Watcher threads only enqueue
+/// here; the queue is drained (releasing serially) at the start of the next
+/// napi call, which always runs on the main thread.
+static RETIRED_RELEASES: OnceLock<Mutex<Vec<Box<dyn FnOnce() + Send>>>> = OnceLock::new();
+
+fn retire_release(release: impl FnOnce() + Send + 'static) {
+    if let Ok(mut retired) = RETIRED_RELEASES.get_or_init(Default::default).lock() {
+        retired.push(Box::new(release));
+        return;
+    }
+    release();
+}
+
+fn reap_retired_releases() {
+    let pending = RETIRED_RELEASES
+        .get_or_init(Default::default)
+        .lock()
+        .ok()
+        .map(|mut retired| std::mem::take(&mut *retired))
+        .unwrap_or_default();
+    for release in pending {
+        release();
+    }
+}
 
 fn disable_display_server_hooks() -> bool {
     *DISABLE_DISPLAY_SERVER_HOOKS.get_or_init(|| {
@@ -142,6 +172,7 @@ pub fn capture_next_window_first_cursor_enter(
     _env: Env,
     callback: Function<FnArgs<(i32, i32)>, ()>,
 ) -> Result<u32> {
+    reap_retired_releases();
     if disable_display_server_hooks() || !wayland::is_wayland() {
         return Err(Error::from_reason(
             "captureNextWindowFirstCursorEnter requires active Wayland hooks",
@@ -171,8 +202,11 @@ pub fn capture_next_window_first_cursor_enter(
                 ThreadsafeFunctionCallMode::NonBlocking,
             );
         }
-        // Now we can safely drop it only once
-        ManuallyDrop::into_inner(cb);
+        // Retire instead of releasing here: the release runs later on the
+        // main thread (see reap below), never on this watcher thread.
+        retire_release(move || {
+            drop(ManuallyDrop::into_inner(cb));
+        });
     });
     token.ok_or_else(|| {
         Error::from_reason(
@@ -182,6 +216,7 @@ pub fn capture_next_window_first_cursor_enter(
 }
 
 pub fn cancel_next_window_first_cursor_enter(token: u32) -> bool {
+    reap_retired_releases();
     wayland::cancel_cursor_enter_watcher(token)
 }
 
@@ -212,6 +247,7 @@ pub fn capture_window_next_pointer_axis(
     window_id: String,
     callback: Function<FnArgs<(u32,)>, ()>,
 ) -> Result<u32> {
+    reap_retired_releases();
     if disable_display_server_hooks() || !wayland::is_wayland() {
         return Err(Error::from_reason(
             "captureWindowNextPointerAxis requires active Wayland hooks",
@@ -231,12 +267,17 @@ pub fn capture_window_next_pointer_axis(
         if let Some(axis) = axis {
             cb.call(axis, ThreadsafeFunctionCallMode::NonBlocking);
         }
-        ManuallyDrop::into_inner(cb);
+        // Retire instead of releasing here: the release runs later on the
+        // main thread (see reap below), never on this watcher thread.
+        retire_release(move || {
+            drop(ManuallyDrop::into_inner(cb));
+        });
     });
     token.ok_or_else(|| Error::from_reason("Unable to watch pointer axis for this Wayland window"))
 }
 
 pub fn cancel_window_pointer_axis_capture(token: u32) -> bool {
+    reap_retired_releases();
     wayland::cancel_pointer_axis_watcher(token)
 }
 
@@ -260,7 +301,11 @@ static DESTRUCTOR: extern "C" fn() = on_unload;
 
 #[cfg(test)]
 mod tests {
-    use super::desktop_name_is_gnome;
+    use super::{desktop_name_is_gnome, reap_retired_releases, retire_release};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     #[test]
     fn recognizes_only_gnome_desktop_names() {
@@ -270,5 +315,16 @@ mod tests {
         assert!(!desktop_name_is_gnome("KDE"));
         assert!(!desktop_name_is_gnome("plasma"));
         assert!(!desktop_name_is_gnome("niri"));
+    }
+
+    #[test]
+    fn retire_then_reap_runs_release() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_probe = Arc::clone(&ran);
+        retire_release(move || ran_probe.store(true, Ordering::SeqCst));
+        // Retired work must not run synchronously on the retiring thread.
+        assert!(!ran.load(Ordering::SeqCst));
+        reap_retired_releases();
+        assert!(ran.load(Ordering::SeqCst));
     }
 }
