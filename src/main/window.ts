@@ -127,7 +127,10 @@ export abstract class ManagedWindow<
     };
 
     this.on("bind", ({ data: wnd }) => {
-      if (wnd.isDestroyed() || this.window !== wnd) return;
+      // NOTE: the setter emits "bind" before assigning this._window, so we
+      // must not compare against this.window here — it still holds the old
+      // value and would reject every normal bind. Only skip destroyed ones.
+      if (wnd.isDestroyed()) return;
       wnd.on("maximize", maximizeListener);
       wnd.on("unmaximize", unmaximizeListener);
       wnd.on("enter-full-screen", enterFullScreenListener);

@@ -10,6 +10,7 @@ import {
 } from "@open-orpheus/window";
 
 import { registerCallHandler } from "../calls";
+import globalLogger from "../logger";
 import { loadFromOrpheusUrl } from "../orpheus";
 import { getWindowScaleFactor, pngFromIco } from "../util";
 import { mainWindow, ManagedWindow } from "../window";
@@ -421,7 +422,18 @@ registerCallHandler<MenuRequest, void>(
     const menu = new AppMenu(parsedMenuData.content);
     managed.setMenu(menu);
     menu.setClickHandler(onClick);
-    await menu.show(wnd);
+    try {
+      await menu.show(wnd);
+    } catch (error) {
+      // show() rejects when template loading or window setup fails. The IPC
+      // dispatcher has no rejection path, so an uncaught error here would
+      // leave the renderer's menu request pending forever. Log and swallow:
+      // there is simply no menu to interact with.
+      globalLogger.error(
+        { name: "winhelper.popupMenu", err: error },
+        "menu.show failed"
+      );
+    }
   }
 );
 
