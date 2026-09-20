@@ -869,6 +869,12 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
       finishCursorCapture();
     });
 
+    // Arm BEFORE creating the window: Chromium sends get_toplevel at
+    // construction, and the native watcher must already be pending or the
+    // toplevel passes by unarmed (then the 200ms deadline falls back to
+    // 0,0 and the menu lands in the top-left corner). This mirrors upstream.
+    startCursorCapture();
+
     const wnd = createOverlayWindow(parentWindow);
     let rendererReady = false;
     const rendererDeadline = setTimeout(() => {
@@ -898,9 +904,8 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
         rendererReady = true;
         clearTimeout(rendererDeadline);
         if (!this.closed && !wnd.isDestroyed()) {
-          // Arm the global "next toplevel" watcher immediately before mapping
-          // the already-created target, minimizing the ownership window.
-          startCursorCapture();
+          // Cursor capture was already armed synchronously in showOverlay,
+          // before window creation (see above).
           wnd.show();
         } else {
           finishCursorCapture();
