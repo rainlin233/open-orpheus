@@ -32,6 +32,7 @@ import packManager from "./pack";
 import SkinPack from "./packs/SkinPack";
 import { registerIpcHandlers } from "../bridge/register";
 import type { MenuContract } from "../bridge/contracts/menu-api";
+import globalLogger from "./logger";
 import { parseBtnUrl, parseElementTemplate } from "./skin/dui";
 import type { ElementTemplate } from "./skin/dui";
 import { registerInputRegionHandlers } from "../bridge/common/inputRegion";
@@ -324,7 +325,24 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
   }
 
   private clearDismissResources() {
-    for (const cleanup of this.dismissCleanups.splice(0)) cleanup();
+    const cleanups = this.dismissCleanups.splice(0);
+    cleanups.forEach((cleanup, index) => {
+      try {
+        cleanup();
+      } catch (error) {
+        // A throwing cleanup must neither kill the app nor skip the
+        // remaining cleanups.
+        globalLogger.warn(
+          {
+            name: "menu.clearDismissResources",
+            index,
+            total: cleanups.length,
+            err: error,
+          },
+          "menu dismiss cleanup failed"
+        );
+      }
+    });
   }
 
   update(patchItems: AppMenuItem[]) {
@@ -385,7 +403,17 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
     try {
       const token = captureWindowNextPointerAxis(
         parentWindow.id.toString(),
-        () => dismiss()
+        // Defensive: must never throw (a throw inside the TSFN dispatch is fatal).
+        () => {
+          try {
+            dismiss();
+          } catch (error) {
+            globalLogger.warn(
+              { name: "menu.axisDismiss", err: error },
+              "menu axis dismiss failed"
+            );
+          }
+        }
       );
       this.dismissCleanups.push(() => cancelWindowPointerAxisCapture(token));
     } catch {
@@ -414,7 +442,12 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
           activePopup.isFocused()
         )
           return;
-        if (this.submenuWindow?.isFocused()) return;
+        if (
+          this.submenuWindow &&
+          !this.submenuWindow.isDestroyed() &&
+          this.submenuWindow.isFocused()
+        )
+          return;
         dismiss();
       }, 50);
     };
@@ -520,7 +553,12 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
         });
         popup.on("blur", () => {
           setTimeout(() => {
-            if (this.submenuWindow?.isFocused()) return;
+            if (
+              this.submenuWindow &&
+              !this.submenuWindow.isDestroyed() &&
+              this.submenuWindow.isFocused()
+            )
+              return;
             dismiss();
           }, 100);
         });
