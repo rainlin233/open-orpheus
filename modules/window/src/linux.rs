@@ -228,7 +228,12 @@ pub fn capture_next_window_first_cursor_enter(
 
 pub fn cancel_next_window_first_cursor_enter(token: u32) -> bool {
     reap_retired_releases();
-    wayland::cancel_cursor_enter_watcher(token)
+    let cancelled = wayland::cancel_cursor_enter_watcher(token);
+    // The cancellation above invokes the watcher callback synchronously
+    // (on this main thread), which retires its handle; reap immediately so
+    // no release is left pending when this was the final menu.
+    reap_retired_releases();
+    cancelled
 }
 
 pub fn arm_next_window_as_popup(
@@ -289,7 +294,11 @@ pub fn capture_window_next_pointer_axis(
 
 pub fn cancel_window_pointer_axis_capture(token: u32) -> bool {
     reap_retired_releases();
-    wayland::cancel_pointer_axis_watcher(token)
+    let cancelled = wayland::cancel_pointer_axis_watcher(token);
+    // Same as above: the just-fired callback retired its handle on this
+    // main thread, so drain it now instead of waiting for the next call.
+    reap_retired_releases();
+    cancelled
 }
 
 #[napi_derive::module_init]
