@@ -300,12 +300,14 @@ mod tests {
         );
         // An unrelated window's toplevel must not steal the reservation.
         assert!(take_pending_popup(fd, 41).is_none());
-        // The first noted surface wins; consuming clears the reservation.
+        // The latest noted surface wins: a foreign surface mapping first
+        // (e.g. at startup) must not steal the menu's reservation.
         note_popup_surface(fd, 42);
         note_popup_surface(fd, 43);
-        let popup = take_pending_popup(fd, 42).expect("recorded surface consumes");
-        assert_eq!(popup.token, 7);
         assert!(take_pending_popup(fd, 42).is_none());
+        let popup = take_pending_popup(fd, 43).expect("recorded surface consumes");
+        assert_eq!(popup.token, 7);
+        assert!(take_pending_popup(fd, 43).is_none());
         PENDING_POPUPS.get().unwrap().lock().unwrap().remove(&fd);
     }
 }
@@ -709,8 +711,10 @@ pub(crate) fn take_pending_popup(fd: RawFd, xdg_surface_id: u32) -> Option<Pendi
 }
 
 /// Remember which xdg_surface a pending popup reservation belongs to.
-/// Called when an xdg_surface appears while armed; first one wins, since
-/// Chromium creates the popup surface immediately after arming.
+/// Called when an xdg_surface appears while armed; the LATEST surface wins:
+/// the menu surface is always created after arming (arm -> create -> show),
+/// so an earlier surface is necessarily foreign (e.g. a startup window
+/// mapping concurrently) and must not steal the reservation.
 pub(crate) fn note_popup_surface(fd: RawFd, xdg_surface_id: u32) {
     let Some(pending) = PENDING_POPUPS.get() else {
         return;
@@ -718,9 +722,7 @@ pub(crate) fn note_popup_surface(fd: RawFd, xdg_surface_id: u32) {
     let Ok(mut pending) = pending.lock() else {
         return;
     };
-    if let Some(popup) = pending.get_mut(&fd)
-        && popup.xdg_surface_id.is_none()
-    {
+    if let Some(popup) = pending.get_mut(&fd) {
         popup.xdg_surface_id = Some(xdg_surface_id);
     }
 }
