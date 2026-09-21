@@ -1,4 +1,7 @@
-use std::{mem::ManuallyDrop, sync::OnceLock};
+use std::{
+    mem::ManuallyDrop,
+    sync::{Mutex, OnceLock},
+};
 
 use napi::{
     Env, Error, Result, Unknown, ValueType,
@@ -13,6 +16,33 @@ mod x11;
 
 static DISABLE_DISPLAY_SERVER_HOOKS: OnceLock<bool> = OnceLock::new();
 
+/// Deferred threadsafe-function releases. Releasing a TSFN directly on a
+/// Wayland watcher thread races Node's threadsafe-function teardown and can
+/// abort the process (silent SIGABRT, no stderr output). Watcher threads only
+/// enqueue here; the queue is drained (releasing serially) at the start of
+/// the next napi call, which always runs on the main thread.
+static RETIRED_RELEASES: OnceLock<Mutex<Vec<Box<dyn FnOnce() + Send>>>> = OnceLock::new();
+
+fn retire_release(release: impl FnOnce() + Send + 'static) {
+    if let Ok(mut retired) = RETIRED_RELEASES.get_or_init(Default::default).lock() {
+        retired.push(Box::new(release));
+        return;
+    }
+    release();
+}
+
+fn reap_retired_releases() {
+    let pending = RETIRED_RELEASES
+        .get_or_init(Default::default)
+        .lock()
+        .ok()
+        .map(|mut retired| std::mem::take(&mut *retired))
+        .unwrap_or_default();
+    for release in pending {
+        release();
+    }
+}
+
 fn disable_display_server_hooks() -> bool {
     *DISABLE_DISPLAY_SERVER_HOOKS.get_or_init(|| {
         std::env::var("DISABLE_DISPLAY_SERVER_HOOKS")
@@ -23,6 +53,35 @@ fn disable_display_server_hooks() -> bool {
             })
             .unwrap_or(false)
     })
+}
+
+/// Whether the session compositor is one where native xdg_popup menus are
+/// known to work: GNOME (`gnome`, `gnome-*` variants like `GNOME-Classic`)
+/// and niri. The value is colon-separated per
+/// the XDG desktop-entry spec (e.g. "ubuntu:GNOME").
+fn desktop_name_supports_native_popup(value: &str) -> bool {
+    value.split(':').any(|desktop| {
+        let desktop = desktop.trim().to_ascii_lowercase();
+        desktop == "gnome" || desktop.starts_with("gnome-") || desktop == "niri"
+    })
+}
+
+fn session_desktop_value() -> Option<String> {
+    [
+        "XDG_CURRENT_DESKTOP",
+        "XDG_SESSION_DESKTOP",
+        "DESKTOP_SESSION",
+    ]
+    .into_iter()
+    .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
+}
+
+fn is_popup_supported_desktop() -> bool {
+    session_desktop_value().is_some_and(|value| desktop_name_supports_native_popup(&value))
+}
+
+pub fn supports_gnome_wayland_popup() -> bool {
+    !disable_display_server_hooks() && wayland::is_wayland() && is_popup_supported_desktop()
 }
 
 #[derive(Clone, Copy)]
@@ -117,17 +176,22 @@ pub fn get_cursor_position() -> Option<(i32, i32)> {
 }
 
 pub fn capture_next_window_first_cursor_enter(
-    env: Env,
+    _env: Env,
     callback: Function<FnArgs<(i32, i32)>, ()>,
-) -> Result<()> {
-    if disable_display_server_hooks() {
-        return env.throw(
-            "captureNextWindowFirstCursorEnter is unavailable when Wayland hooks are disabled",
-        );
+) -> Result<u32> {
+    reap_retired_releases();
+    if disable_display_server_hooks() || !wayland::is_wayland() {
+        return Err(Error::from_reason(
+            "captureNextWindowFirstCursorEnter requires active Wayland hooks",
+        ));
     }
 
     // Give only one undroppable reference to the callback closure below, to avoid double drop
     // when FD close (FD close causes the closure to drop its referenced value)
+    //
+    // The handle is never released on the watcher thread: release is deferred
+    // to the next napi call (main thread) via retire_release, because
+    // releasing a threadsafe function off-thread can abort the process.
     let mut callback = Some(ManuallyDrop::new(
         callback.build_threadsafe_function().build_callback(
             |ctx: ThreadsafeCallContext<(u32, u32)>| {
@@ -136,24 +200,105 @@ pub fn capture_next_window_first_cursor_enter(
         )?,
     ));
 
-    if !wayland::on_next_new_window_first_cursor_enter(move |x, y| {
-        if x < 0 || y < 0 {
-            return;
-        }
+    let token = wayland::on_next_new_window_first_cursor_enter(move |position| {
         let Some(cb) = callback.take() else {
             return;
         };
-        cb.call(
-            (x as u32, y as u32),
-            ThreadsafeFunctionCallMode::NonBlocking,
-        );
-        // Now we can safely drop it only once
-        ManuallyDrop::into_inner(cb);
-    }) {
-        return env.throw("captureNextWindowFirstCursorEnter is unavailable because Wayland hooks are not initialized");
-    }
+        if let Some((x, y)) = position
+            && x >= 0
+            && y >= 0
+        {
+            cb.call(
+                (x as u32, y as u32),
+                ThreadsafeFunctionCallMode::NonBlocking,
+            );
+        }
+        // Now we can safely retire it only once; the actual release happens
+        // on the main thread inside a later napi call (see reap below).
+        retire_release(move || {
+            drop(ManuallyDrop::into_inner(cb));
+        });
+    });
+    token.ok_or_else(|| {
+        Error::from_reason(
+            "captureNextWindowFirstCursorEnter is unavailable because Wayland hooks are not initialized",
+        )
+    })
+}
 
-    Ok(())
+pub fn cancel_next_window_first_cursor_enter(token: u32) -> bool {
+    reap_retired_releases();
+    let cancelled = wayland::cancel_cursor_enter_watcher(token);
+    // The cancellation above invokes the watcher callback synchronously
+    // (on this main thread), which retires its handle; reap immediately so
+    // no release is left pending when this was the final menu.
+    reap_retired_releases();
+    cancelled
+}
+
+pub fn arm_next_window_as_popup(
+    parent_window_id: String,
+    width: i32,
+    height: i32,
+    anchor_x: Option<i32>,
+    anchor_y: Option<i32>,
+) -> Option<u32> {
+    if !supports_gnome_wayland_popup() {
+        return None;
+    }
+    let anchor = anchor_x.zip(anchor_y);
+    wayland::arm_next_window_as_popup(&parent_window_id, width, height, anchor)
+}
+
+pub fn cancel_pending_popup(token: u32) -> bool {
+    wayland::cancel_pending_popup(token)
+}
+
+pub fn is_window_wayland_popup(window_id: String) -> bool {
+    wayland::window_is_popup(&window_id)
+}
+
+pub fn capture_window_next_pointer_axis(
+    _env: Env,
+    window_id: String,
+    callback: Function<FnArgs<(u32,)>, ()>,
+) -> Result<u32> {
+    reap_retired_releases();
+    if disable_display_server_hooks() || !wayland::is_wayland() {
+        return Err(Error::from_reason(
+            "captureWindowNextPointerAxis requires active Wayland hooks",
+        ));
+    }
+    let mut callback = Some(ManuallyDrop::new(
+        callback.build_threadsafe_function().build_callback(
+            |ctx: ThreadsafeCallContext<u32>| {
+                Ok(std::convert::Into::<FnArgs<(u32,)>>::into((ctx.value,)))
+            },
+        )?,
+    ));
+    let token = wayland::on_next_pointer_axis(&window_id, move |axis| {
+        let Some(cb) = callback.take() else {
+            return;
+        };
+        if let Some(axis) = axis {
+            cb.call(axis, ThreadsafeFunctionCallMode::NonBlocking);
+        }
+        // Retire instead of releasing here: the release runs later on the
+        // main thread (see reap below), never on this watcher thread.
+        retire_release(move || {
+            drop(ManuallyDrop::into_inner(cb));
+        });
+    });
+    token.ok_or_else(|| Error::from_reason("Unable to watch pointer axis for this Wayland window"))
+}
+
+pub fn cancel_window_pointer_axis_capture(token: u32) -> bool {
+    reap_retired_releases();
+    let cancelled = wayland::cancel_pointer_axis_watcher(token);
+    // Same as above: the just-fired callback retired its handle on this
+    // main thread, so drain it now instead of waiting for the next call.
+    reap_retired_releases();
+    cancelled
 }
 
 #[napi_derive::module_init]
@@ -173,3 +318,35 @@ pub extern "C" fn on_unload() {
 #[used]
 #[unsafe(link_section = ".fini_array")]
 static DESTRUCTOR: extern "C" fn() = on_unload;
+
+#[cfg(test)]
+mod tests {
+    use super::{desktop_name_supports_native_popup, reap_retired_releases, retire_release};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    #[test]
+    fn recognizes_popup_supported_desktop_names() {
+        assert!(desktop_name_supports_native_popup("GNOME"));
+        assert!(desktop_name_supports_native_popup("ubuntu:GNOME"));
+        assert!(desktop_name_supports_native_popup("GNOME-Classic"));
+        assert!(desktop_name_supports_native_popup("niri"));
+        assert!(desktop_name_supports_native_popup("NIRI"));
+        assert!(!desktop_name_supports_native_popup("KDE"));
+        assert!(!desktop_name_supports_native_popup("plasma"));
+        assert!(!desktop_name_supports_native_popup("Hyprland"));
+    }
+
+    #[test]
+    fn retire_then_reap_runs_release() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_probe = Arc::clone(&ran);
+        retire_release(move || ran_probe.store(true, Ordering::SeqCst));
+        // Retired work must not run synchronously on the retiring thread.
+        assert!(!ran.load(Ordering::SeqCst));
+        reap_retired_releases();
+        assert!(ran.load(Ordering::SeqCst));
+    }
+}
